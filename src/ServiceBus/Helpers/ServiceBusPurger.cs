@@ -19,92 +19,118 @@
 //=======================================================================================
 #endregion
 
+using Azure.Messaging.ServiceBus;
+
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Core;
-using Microsoft.Azure.ServiceBus.Management;
-using System.Threading.Tasks;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceBusExplorer.ServiceBus.Helpers
 {
-    public class ServiceBusPurger
+    public abstract class ServiceBusPurger<TEntity>
+        where TEntity : class
     {
-        // Either queueDescription or subscriptWrapper is used - but never both.
-        readonly QueueDescription queueDescription;
-        readonly SubscriptionWrapper2 subscriptionWrapper;
-        readonly ServiceBusHelper2 serviceBusHelper;
+        protected readonly ServiceBusHelper2 serviceBusHelper;
 
-        public ServiceBusPurger(ServiceBusHelper2 serviceBusHelper, QueueDescription queueDescription)
+        public event EventHandler<PurgeOperationCompletedEventArgs> PurgeCompleted;
+        public event EventHandler<PurgeOperationFailedEventArgs> PurgeFailed;
+
+        protected ServiceBusPurger(ServiceBusHelper2 serviceBusHelper)
         {
             this.serviceBusHelper = serviceBusHelper;
-            this.queueDescription = queueDescription;
         }
 
-        public ServiceBusPurger(ServiceBusHelper2 serviceBusHelper, SubscriptionWrapper2 subscriptionWrapper)
+        public async Task Purge(PurgeStrategies purgeStrategy, TEntity entity)
         {
-            this.serviceBusHelper = serviceBusHelper;
-            this.subscriptionWrapper = subscriptionWrapper;
+            await this.Purge(purgeStrategy, new List<TEntity>() { entity })
+                .ConfigureAwait(false);
         }
 
-        /// <summary>
-        /// Purges the messages from a queue, subscription or a dead letter queue. Handles all kinds of queues.
-        /// </summary>
-        /// <param name="purgeDeadLetterQueueInstead">If false it will purge the queue, if true it will purge the 
-        /// dead letter queue instead.</param>
-        /// <returns>The number of messages purged</returns>
-        public async Task<long> Purge(bool purgeDeadLetterQueueInstead = false)
+        public async Task Purge(PurgeStrategies purgeStrategy, List<TEntity> entities)
         {
-            long totalMessagesPurged;
-
-            if (!purgeDeadLetterQueueInstead && EntityRequiresSession())
+            foreach (TEntity subscription in entities)
             {
-                totalMessagesPurged = await PurgeSessionEntity().ConfigureAwait(false);
-            }
-            else
-            {
-                totalMessagesPurged = await PurgeNonSessionEntity(purgeDeadLetterQueueInstead: purgeDeadLetterQueueInstead).ConfigureAwait(false);
-            }
+                if ((purgeStrategy & PurgeStrategies.Messages) == PurgeStrategies.Messages)
+                {
+                    await this.InternalPurge(subscription, purgeDeadLetterQueueInstead: false)
+                        .ConfigureAwait(false);
+                }
 
-            return totalMessagesPurged;
+                if ((purgeStrategy & PurgeStrategies.DeadletteredMessages) == PurgeStrategies.DeadletteredMessages)
+                {
+                    await this.InternalPurge(subscription, purgeDeadLetterQueueInstead: true)
+                        .ConfigureAwait(false);
+                }
+            }
         }
 
-        async Task<long> PurgeSessionEntity()
+        private async Task InternalPurge(TEntity entity, bool purgeDeadLetterQueueInstead)
         {
-            long messagesToPurgeCount = await GetMessageCount(deadLetterQueueData: false);
+            try
+            {
+                Stopwatch stopwatch = new Stopwatch();
+                stopwatch.Start();
 
-            return await DoPurgeSessionEntity(messagesToPurgeCount).ConfigureAwait(false);
+                long totalMessagesPurged;
+
+                if (!purgeDeadLetterQueueInstead && this.EntityRequiresSession(entity))
+                {
+                    totalMessagesPurged = await this.PurgeSessionEntity(entity).ConfigureAwait(false);
+                }
+                else
+                {
+                    totalMessagesPurged = await this.PurgeNonSessionEntity(entity, purgeDeadLetterQueueInstead).ConfigureAwait(false);
+                }
+
+                stopwatch.Stop();
+
+                string entityPath = this.GetEntityPath(entity);
+                this.PurgeCompleted?.Invoke(this, new PurgeOperationCompletedEventArgs(entityPath, stopwatch.ElapsedMilliseconds, totalMessagesPurged, purgeDeadLetterQueueInstead));
+            }
+            catch (Exception ex)
+            {
+                this.PurgeFailed?.Invoke(this, new PurgeOperationFailedEventArgs(ex));
+            }
         }
 
-        async Task<long> DoPurgeSessionEntity(long messagesToPurgeCount)
+        private async Task<long> PurgeSessionEntity(TEntity entity)
         {
             long totalMessagesPurged = 0;
-
-            ISessionClient sessionClient = new SessionClient(
-                serviceBusHelper.ConnectionString, 
-                GetEntityPath(deadLetterQueue: false),
-                null,
-                receiveMode: ReceiveMode.ReceiveAndDelete, 
-                retryPolicy: RetryPolicy.Default, 
-                prefetchCount: 10,
-                transportType: serviceBusHelper.TransportType);
-
             var consecutiveSessionTimeOuts = 0;
+            ServiceBusSessionReceiver sessionReceiver = null;
+            long messagesToPurgeCount = await GetMessageCount(entity, deadLetterQueueData: false)
+                .ConfigureAwait(false);
+
+            var client = new ServiceBusClient(
+              serviceBusHelper.ConnectionString,
+              new ServiceBusClientOptions
+              {
+                  TransportType = serviceBusHelper.TransportType
+              });
+
             try
             {
                 const int enoughZeroReceives = 3;
+
                 while (consecutiveSessionTimeOuts < enoughZeroReceives && totalMessagesPurged < messagesToPurgeCount)
                 {
-                    IMessageSession session = await sessionClient.AcceptMessageSessionAsync();
+                    sessionReceiver = await CreateServiceBusSessionReceiver(entity,
+                        client,
+                        purgeDeadLetterQueueInstead: false)
+                        .ConfigureAwait(false);
 
                     var consecutiveZeroBatchReceives = 0;
+
                     while (consecutiveZeroBatchReceives < enoughZeroReceives
                         && totalMessagesPurged < messagesToPurgeCount)
                     {
-                        var messages = await session.ReceiveAsync(1000, TimeSpan.FromMilliseconds(1000))
-                                                    .ConfigureAwait(false);
+                        var messages = await sessionReceiver.ReceiveMessagesAsync(
+                            maxMessages: 1000,
+                            maxWaitTime: TimeSpan.FromMilliseconds(1000))
+                            .ConfigureAwait(false);
 
                         if (messages != null && messages.Any())
                         {
@@ -117,7 +143,7 @@ namespace ServiceBusExplorer.ServiceBus.Helpers
                         }
                     }
 
-                    await session.CloseAsync().ConfigureAwait(false);
+                    await sessionReceiver.CloseAsync().ConfigureAwait(false);
                 }
             }
             catch (TimeoutException)
@@ -126,16 +152,15 @@ namespace ServiceBusExplorer.ServiceBus.Helpers
             }
             finally
             {
-                await sessionClient.CloseAsync().ConfigureAwait(false);
+                await client.DisposeAsync().ConfigureAwait(false);
             }
 
             return totalMessagesPurged;
         }
 
-        async Task<long> PurgeNonSessionEntity(bool purgeDeadLetterQueueInstead)
+        private async Task<long> PurgeNonSessionEntity(TEntity entity, bool purgeDeadLetterQueueInstead)
         {
-            var entityPath = GetEntityPath(purgeDeadLetterQueueInstead);
-            long messagesToPurgeCount = await GetMessageCount(purgeDeadLetterQueueInstead);
+            long messagesToPurgeCount = await GetMessageCount(entity, purgeDeadLetterQueueInstead).ConfigureAwait(false);
             long purgedMessagesCount = 0;
             var messageCount = messagesToPurgeCount;
             var retries = 0;
@@ -143,149 +168,95 @@ namespace ServiceBusExplorer.ServiceBus.Helpers
             // Sometimes it does not start polling or quits polling while not done
             while (purgedMessagesCount < messagesToPurgeCount && messageCount >= 1 && retries < 3)
             {
-                purgedMessagesCount += await DoPurgeNonSessionEntity(
-                    queue: purgeDeadLetterQueueInstead ? true : queueDescription != null,
+                purgedMessagesCount += await DoPurgeNonSessionEntity(entity,
                     messagesToPurgeCount: messagesToPurgeCount,
-                    entityPath: entityPath)
+                    purgeDeadLetterSubqueueInstead: purgeDeadLetterQueueInstead
+                    )
                     .ConfigureAwait(false);
 
-                messageCount = await GetMessageCount(purgeDeadLetterQueueInstead);
+                messageCount = await GetMessageCount(entity, purgeDeadLetterQueueInstead).ConfigureAwait(false);
                 ++retries;
             }
 
             return purgedMessagesCount;
         }
 
-        string GetEntityPath(bool deadLetterQueue)
-        {
-            if (deadLetterQueue)
-            {
-                if (queueDescription != null)
-                {
-                    return EntityNameHelper.FormatDeadLetterPath(queueDescription.Path);
-                }
-                else
-                {
-                    var subscriptionPath = EntityNameHelper.FormatSubscriptionPath(subscriptionWrapper.TopicDescription.Path,
-                        subscriptionWrapper.SubscriptionDescription.SubscriptionName);
-                    return EntityNameHelper.FormatDeadLetterPath(subscriptionPath);
-                }
-            }
-            else
-            {
-                if (queueDescription != null)
-                {
-                    return queueDescription.Path;
-                }
-                else
-                {
-                    return EntityNameHelper.FormatSubscriptionPath(subscriptionWrapper.TopicDescription.Path,
-                        subscriptionWrapper.SubscriptionDescription.SubscriptionName);
-                }
-            }
-        }
-
-        async Task<long> GetMessageCount(bool deadLetterQueueData)
-        {
-            var client = new ManagementClient(serviceBusHelper.ConnectionString);
-
-            if (deadLetterQueueData)
-            {
-                if (queueDescription != null)
-                {
-                    var runtimeInfo = await client.GetQueueRuntimeInfoAsync(queueDescription.Path);
-
-                    return runtimeInfo.MessageCountDetails.DeadLetterMessageCount;
-                }
-                else
-                {
-                    var runtimeInfo = await client.GetSubscriptionRuntimeInfoAsync(subscriptionWrapper.TopicDescription.Path,
-                        subscriptionWrapper.SubscriptionDescription.SubscriptionName);
-
-                    return runtimeInfo.MessageCountDetails.DeadLetterMessageCount;
-                }
-            }
-            else
-            {
-                if (queueDescription != null)
-                {
-                    var runtimeInfo = await client.GetQueueRuntimeInfoAsync(queueDescription.Path);
-
-                    return runtimeInfo.MessageCountDetails.ActiveMessageCount;
-                }
-                else
-                {
-                    var runtimeInfo = await client.GetSubscriptionRuntimeInfoAsync(subscriptionWrapper.TopicDescription.Path,
-                                subscriptionWrapper.SubscriptionDescription.SubscriptionName);
-
-                    return runtimeInfo.MessageCountDetails.ActiveMessageCount;
-                }
-            }
-        }
-
-        async Task<long> DoPurgeNonSessionEntity(bool queue, long messagesToPurgeCount, string entityPath)
+        private async Task<long> DoPurgeNonSessionEntity(TEntity entity, long messagesToPurgeCount, bool purgeDeadLetterSubqueueInstead)
         {
             long totalMessagesPurged = 0;
             var taskCount = Math.Min((int)messagesToPurgeCount / 1000 + 1, 20);
             var tasks = new Task[taskCount];
             var quit = false;  // This instance controls all the receiving tasks
 
-            for (var taskIndex = 0; taskIndex < tasks.Length; taskIndex++)
+            var client = new ServiceBusClient(
+                serviceBusHelper.ConnectionString,
+                new ServiceBusClientOptions { TransportType = serviceBusHelper.TransportType });
+
+            try
             {
-                tasks[taskIndex] = Task.Run(async () =>
+                for (var taskIndex = 0; taskIndex < tasks.Length; taskIndex++)
                 {
-                    ClientEntity receiver;
-
-                    receiver = new MessageReceiver(serviceBusHelper.ConnectionString, entityPath,
-                        ReceiveMode.ReceiveAndDelete, RetryPolicy.Default, prefetchCount: 50);
-
-                    try
+                    tasks[taskIndex] = Task.Run(async () =>
                     {
-                        var consecutiveZeroBatchReceives = 0;
-                        const int enoughZeroBatchReceives = 3;
+                        ServiceBusReceiver receiver = CreateServiceBusReceiver(entity, client, purgeDeadLetterSubqueueInstead);
 
-                        while (!quit && Interlocked.Read(ref totalMessagesPurged) < messagesToPurgeCount)
+                        try
                         {
-                            IEnumerable<Message> messages;
+                            var consecutiveZeroBatchReceives = 0;
+                            const int enoughZeroBatchReceives = 3;
 
-                            messages = await ((MessageReceiver)receiver).ReceiveAsync(1000,
-                               TimeSpan.FromMilliseconds(20000 * (consecutiveZeroBatchReceives + 1)))
-                               .ConfigureAwait(false);
-
-                            // ReSharper disable once PossibleMultipleEnumeration
-                            if (messages != null && messages.Any())
+                            while (!quit && Interlocked.Read(ref totalMessagesPurged) < messagesToPurgeCount)
                             {
+                                IEnumerable<ServiceBusReceivedMessage> messages;
+
+                                messages = await receiver.ReceiveMessagesAsync(
+                                    maxMessages: 1000,
+                                    maxWaitTime: TimeSpan.FromMilliseconds(20000 * (consecutiveZeroBatchReceives + 1)))
+                                   .ConfigureAwait(false);
+
                                 // ReSharper disable once PossibleMultipleEnumeration
-                                long messageCount = messages.Count();
-                                Interlocked.Add(ref totalMessagesPurged, messageCount);
-                            }
-                            else
-                            {
-                                ++consecutiveZeroBatchReceives;
-                                if (consecutiveZeroBatchReceives >= enoughZeroBatchReceives)
-                                    quit = true;
+                                if (messages != null && messages.Any())
+                                {
+                                    // ReSharper disable once PossibleMultipleEnumeration
+                                    long messageCount = messages.Count();
+                                    Interlocked.Add(ref totalMessagesPurged, messageCount);
+                                }
+                                else
+                                {
+                                    ++consecutiveZeroBatchReceives;
+                                    if (consecutiveZeroBatchReceives >= enoughZeroBatchReceives)
+                                        quit = true;
+                                }
                             }
                         }
-                    }
-                    finally
-                    {
-                        await receiver.CloseAsync().ConfigureAwait(false);
-                    }
-                });  // End of lambda 
+                        finally
+                        {
+                            if (null != receiver)
+                            {
+                                await receiver.CloseAsync().ConfigureAwait(false);
+                            }
+                        }
+                    });  // End of lambda 
+                }
+
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            finally
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
             }
 
-            await Task.WhenAll(tasks).ConfigureAwait(false);
             return totalMessagesPurged;
         }
 
-        bool EntityRequiresSession()
-        {
-            if (queueDescription != null)
-            {
-                return queueDescription.RequiresSession;
-            }
+        protected abstract Task<long> GetMessageCount(TEntity entity, bool deadLetterQueueData);
 
-            return subscriptionWrapper.SubscriptionDescription.RequiresSession;
-        }
+        protected abstract bool EntityRequiresSession(TEntity entity);
+
+        protected abstract string GetEntityPath(TEntity entity);
+
+        protected abstract ServiceBusReceiver CreateServiceBusReceiver(TEntity entity, ServiceBusClient client, bool purgeDeadLetterQueueInstead);
+
+        protected abstract Task<ServiceBusSessionReceiver> CreateServiceBusSessionReceiver(TEntity entity, ServiceBusClient client, bool purgeDeadLetterQueueInstead);
     }
 }

@@ -93,7 +93,7 @@ namespace ServiceBusExplorer.Controls
         private const string TransactionAborted = " - Transaction aborted.";
         private const string NoMoreSessionsToAccept = "Receiver[{0}]: No more sessions to accept.";
         private const string FilterExpressionIsNotValid = "The filter expression is not valid.";
-        private const string NoMessageSelected = "No message to send has been selected under the Files tab.";
+        private const string NoMessageSelected = "No file to send has been selected under the Files tab.";
         private const string SelectBrokeredMessageGenerator = "Select a BrokeredMessage generator...";
         private const string InvalidJsonTemplate = "{0} is an invalid JSON template. The file will be used as text message rather than a template.";
         private const string InvalidXmlTemplate = "{0} is an invalid XML template. The file will be used as text message rather than a template.";
@@ -135,8 +135,8 @@ namespace ServiceBusExplorer.Controls
         private const string EnableReceiverCommitTooltip = "Enable transaction commit for message receivers.";
         private const string EnableMessageIdUpdateTooltip = "Enable automatic message id update.";
         private const string OneSessionPerSenderTaskTooltip = "Use one session per sender task.";
-        private const string EnableMoveToDeadLetterTooltip = "When this option is enabled, all received messages are moved to the DeadLetter queue.";
-        private const string EnableReadFromDeadLetterTooltip = "When this option is enabled, the receivers attempts to read messages from the DeadLetter queue.";
+        private const string EnableMoveToDeadLetterTooltip = "When this option is enabled, all received messages are moved to the Dead-letter queue.";
+        private const string EnableReadFromDeadLetterTooltip = "When this option is enabled, the receivers attempts to read messages from the Dead-letter queue.";
         private const string EnableCreateNewMessagingFactoryForSender = "Creating a new messaging factory for each sender task";
         private const string EnableCreateNewMessagingFactoryForReceiver = "Creating a new messaging factory for each receiver task";
 
@@ -437,7 +437,7 @@ namespace ServiceBusExplorer.Controls
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(txtMessageText.Text))
+                if (messageTabControl.SelectedIndex == MessageTabPage && string.IsNullOrWhiteSpace(txtMessageText.Text))
                 {
                     writeToLog(MessageCannotBeNull);
                     return false;
@@ -622,7 +622,7 @@ namespace ServiceBusExplorer.Controls
                             Invoke((MethodInvoker) delegate
                             {
                                 btnStart.Text = StartCaption;
-                                MainForm.SingletonMainForm.refreshEntity_Click(null, null);
+                                MainForm.SingletonMainForm.RefreshSelectedEntity();
                             });
                         }
                     };

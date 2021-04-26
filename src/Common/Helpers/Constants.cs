@@ -37,7 +37,12 @@ namespace ServiceBusExplorer.Helpers
         public const string EventHubEntities = "Event Hubs";
         public const string NotificationHubEntities = "Notification Hubs";
 
-
+        public const string ActiveMessages = "Active";
+        public const string DeadLetterMessages = "DeadLettered";
+        public const string ScheduledMessages = "Scheduled";
+        public const string TransferMessages = "InTransfer";
+        public const string TransferDeadLetterMessages = "Transfer DL";
+        
         public static readonly TimeSpan DefaultOperationTimeout = TimeSpan.FromMinutes(1.0);
         public static readonly TimeSpan TokenRequestOperationTimeout = TimeSpan.FromMinutes(3.0);
         public static readonly long ServicePointMaxIdleTimeMilliSeconds = 50000;
@@ -82,5 +87,6 @@ namespace ServiceBusExplorer.Helpers
         public static readonly Type MessageType = typeof(BrokeredMessage);
         public static readonly Type GuidType = typeof(Guid);
         public static readonly Type ObjectType = typeof(object);
+        public static readonly List<string> AlwaysOmittedProperties = new List<string> {"DeadLetterReason", "DeadLetterErrorDescription", "NServiceBus.Transport.Recovery"};
     }
 }

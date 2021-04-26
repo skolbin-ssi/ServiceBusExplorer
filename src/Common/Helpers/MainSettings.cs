@@ -29,6 +29,8 @@ using Microsoft.ServiceBus;
 
 namespace ServiceBusExplorer.Helpers
 {
+    using Utilities.Helpers;
+
     public class MainSettings
     {
         #region Internal constants
@@ -59,11 +61,14 @@ namespace ServiceBusExplorer.Helpers
         public string MessageContentType { get; set; }
 
         public List<string> SelectedEntities { get; set; }
+        public List<string> SelectedMessageCounts { get; set; }
 
         public string MessageBodyType { get; set; }
         public ConnectivityMode ConnectivityMode { get; set; }
         public bool UseAmqpWebSockets { get; set; }
         public Enums.EncodingType EncodingType { get; set; }
+
+        public bool DisableAccidentalDeletionPrevention { get; set; }
 
         public bool ProxyOverrideDefault { get; set; }
         public string ProxyAddress { get; set; }
@@ -72,6 +77,8 @@ namespace ServiceBusExplorer.Helpers
         public bool ProxyUseDefaultCredentials { get; set; }
         public string ProxyUserName { get; set; }
         public string ProxyPassword { get; set; }
+
+        public List<NodeColorInfo> NodesColors { get; set; } = new List<NodeColorInfo>();
 
         #endregion
 
@@ -118,6 +125,7 @@ namespace ServiceBusExplorer.Helpers
             MessageText = string.Empty;
             MessageContentType = string.Empty;
             SelectedEntities = ConfigurationHelper.Entities;
+            SelectedMessageCounts = ConfigurationHelper.MessageCounts;
 
             MessageBodyType = BodyType.Stream.ToString();
             ConnectivityMode = ConnectivityMode.AutoDetect;
@@ -130,6 +138,8 @@ namespace ServiceBusExplorer.Helpers
             ProxyBypassList = string.Empty;
             ProxyUserName = string.Empty;
             ProxyPassword = string.Empty;
+            
+            NodesColors = new List<NodeColorInfo>();
         }
 
         public override bool Equals(object other)
@@ -163,6 +173,7 @@ namespace ServiceBusExplorer.Helpers
             if (MessageContentType != otherProperties.MessageContentType) return false;
 
             if (!SelectedEntities.SequenceEqual(SelectedEntities)) return false;
+            if (!SelectedMessageCounts.SequenceEqual(SelectedMessageCounts)) return false;
 
             if (MessageBodyType != otherProperties.MessageBodyType) return false;
             if (ConnectivityMode != otherProperties.ConnectivityMode) return false;
@@ -175,6 +186,7 @@ namespace ServiceBusExplorer.Helpers
             if (ProxyBypassList != otherProperties.ProxyBypassList) return false;
             if (ProxyUserName != otherProperties.ProxyUserName) return false;
             if (ProxyPassword != otherProperties.ProxyPassword) return false;
+            if (NodesColors.SequenceEqual(otherProperties.NodesColors)) return false;
 
             return true;
         }
@@ -263,6 +275,9 @@ namespace ServiceBusExplorer.Helpers
                 case ConfigurationParameters.SelectedEntitiesParameter:
                     return SelectedEntities;
 
+                case ConfigurationParameters.SelectedMessageCountsParameter:
+                    return SelectedMessageCounts;
+
                 case ConfigurationParameters.MessageBodyType:
                     return MessageBodyType;
 
@@ -271,6 +286,9 @@ namespace ServiceBusExplorer.Helpers
 
                 case ConfigurationParameters.UseAmqpWebSockets:
                     return UseAmqpWebSockets;
+
+                case ConfigurationParameters.DisableAccidentalDeletionPrevention:
+                    return DisableAccidentalDeletionPrevention;
 
                 case ConfigurationParameters.Encoding:
                     return EncodingType;
@@ -295,6 +313,9 @@ namespace ServiceBusExplorer.Helpers
 
                 case ConfigurationParameters.ProxyPassword:
                     return ProxyPassword;
+
+                case ConfigurationParameters.NodesColors:
+                    return NodesColors;
             }
 
             throw new InvalidOperationException(String.Format("Unexpected value for setting: {0}", setting));

@@ -215,7 +215,7 @@ namespace ServiceBusExplorer.Forms
             btnSave.Visible = false;
             btnSubmit.Location = btnSave.Location;
             cboSenderInspector.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            int moveRightInPixels = btnClose.Left - btnSubmit.Left;
+            var moveRightInPixels = btnClose.Left - btnSubmit.Left;
             Size = new Size(Size.Width - moveRightInPixels, 80);
             lblBody.Left += moveRightInPixels;
             cboBodyType.Left += moveRightInPixels;
@@ -372,7 +372,7 @@ namespace ServiceBusExplorer.Forms
                                                      Path = $"{serviceBusHelper.NamespaceUri.AbsolutePath}/{messageSender.Path}",
                                                      Scheme = "sb"
                                                  }.Uri;
-                                outboundMessage = serviceBusHelper.CreateMessageForWcfReceiver(message.Clone(txtMessageText.Text),
+                                outboundMessage = serviceBusHelper.CreateMessageForWcfReceiver(message.Clone(txtMessageText.Text, messagesSplitContainer.Visible),
                                                                                                0,
                                                                                                false,
                                                                                                false,
@@ -384,8 +384,8 @@ namespace ServiceBusExplorer.Forms
                                 {
                                     // For body type ByteArray cloning is not an option. When cloned, supplied body can be only of a string or stream types, but not byte array :(
                                     outboundMessage = bodyType == BodyType.ByteArray ?
-                                                      brokeredMessage.CloneWithByteArrayBodyType(txtMessageText.Text) :
-                                                      brokeredMessage.Clone(txtMessageText.Text);
+                                                      brokeredMessage.CloneWithByteArrayBodyType(txtMessageText.Text, messagesSplitContainer.Visible) :
+                                                      brokeredMessage.Clone(txtMessageText.Text, messagesSplitContainer.Visible);
                                 }
                                 else
                                 {
@@ -394,8 +394,8 @@ namespace ServiceBusExplorer.Forms
 
                                     // For body type ByteArray cloning is not an option. When cloned, supplied body can be only of a string or stream types, but not byte array :(
                                     outboundMessage = bodyType == BodyType.ByteArray ?
-                                                      message.CloneWithByteArrayBodyType(messageText) :
-                                                      message.Clone(messageText);
+                                                      message.CloneWithByteArrayBodyType(messageText, messagesSplitContainer.Visible) :
+                                                      message.Clone(message.GetBody<Stream>(), messagesSplitContainer.Visible);
                                 }
 
                                 outboundMessage = serviceBusHelper.CreateMessageForApiReceiver(outboundMessage,
@@ -415,10 +415,8 @@ namespace ServiceBusExplorer.Forms
                             {
                                 try
                                 {
-                                    if (string.Compare(messagePropertyInfo.Key, "DeadLetterReason",
-                                        StringComparison.InvariantCultureIgnoreCase) == 0 ||
-                                        string.Compare(messagePropertyInfo.Key, "DeadLetterErrorDescription",
-                                        StringComparison.InvariantCultureIgnoreCase) == 0)
+                                    if (Constants.AlwaysOmittedProperties.Exists(
+                                        omitProp => messagePropertyInfo.Key.Equals(omitProp, StringComparison.InvariantCultureIgnoreCase)))
                                     {
                                         continue;
                                     }
@@ -461,9 +459,11 @@ namespace ServiceBusExplorer.Forms
                         {
                             return;
                         }
+
                         var sent = outboundMessages.Count;
                         var stopwatch = new Stopwatch();
                         stopwatch.Start();
+
                         if (chkRemove.Checked)
                         {
                             var messageHandler = CreateDeadLetterMessageHandler();
@@ -486,13 +486,25 @@ namespace ServiceBusExplorer.Forms
                                 writeToLog(string.Format(MessageMovedMessage, result.DeletedSequenceNumbers.Count,
                                     messageSender.Path, stopwatch.ElapsedMilliseconds));
                             }
+
+                            if (null != queueDescription)
+                            {
+                                if (!messageSender.Path.Equals(queueDescription.Path, StringComparison.InvariantCultureIgnoreCase))
+                                {
+                                    await MainForm.SingletonMainForm.RefreshServiceBusEntityNode(queueDescription.Path);
+                                }
+                            }
+                            else if (null != subscriptionWrapper?.SubscriptionDescription?.TopicPath)
+                            {
+                                await MainForm.SingletonMainForm.RefreshServiceBusEntityNode(subscriptionWrapper.SubscriptionDescription.TopicPath);
+                            }
                         }
                         else
                         {
                             var messageIndex = 0;
                             try
                             {
-                                while(messageIndex < outboundMessages.Count)
+                                while (messageIndex < outboundMessages.Count)
                                 {
                                     await messageSender.SendAsync(outboundMessages[messageIndex++]);
                                 }
@@ -509,6 +521,8 @@ namespace ServiceBusExplorer.Forms
                             stopwatch.Stop();
                             writeToLog(string.Format(MessageSentMessage, sent, messageSender.Path, stopwatch.ElapsedMilliseconds));
                         }
+
+                        await MainForm.SingletonMainForm.RefreshServiceBusEntityNode(messageSender.Path);
 
                         if (brokeredMessages != null)
                         {
