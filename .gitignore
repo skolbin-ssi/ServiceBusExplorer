@@ -160,3 +160,12 @@ $RECYCLE.BIN/
 
 # JetBrains Rider
 .idea/
+
+# The new Debug Profile file
+/src/ServiceBusExplorer/Properties/launchSettings.json
+
+# VS code settings
+.vscode/settings.json
+
+# Event Grid Explorer Library pkgrefgen
+/src/EventGridExplorerLibrary/.pkgrefgen/
